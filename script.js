@@ -17,7 +17,8 @@ class Texture {
 }
 
 class Material {
-  constructor(color, roughness, emittance, options = {}) {
+  constructor(type, color, roughness, emittance, options = {}) {
+    this.type = type;
     this.color = color;
     this.roughness = roughness;
     this.emittance = emittance;
@@ -26,12 +27,15 @@ class Material {
     this.albedoTex = options.albedoTex || null;
     this.normalTex = options.normalTex || null;
     this.heightTex = options.heightTex || null;
+    this.roughnessTex = options.roughnessTex || null;
     
     this.uvScale = options.uvScale || [1, 1];
     this.normalMultiplier = options.normalMultiplier || 1;
     this.heightMultiplier = options.heightMultiplier !== undefined ? options.heightMultiplier : 0.05;
     this.heightSamp = options.heightSamp !== undefined ? options.heightSamp : 32;
     this.heightOffset = options.heightOffset || 0.0;
+    this.ior = options.ior || 1.5;
+    this.concentration = options.concentration || 1;
   }
 }
 
@@ -378,7 +382,7 @@ class Scene {
   constructor(canvas) {
     this.objects = [];
     this.camera = new Camera(canvas);
-    this.background = new Material([0.02, 0.03, 0.05], 1.0, [0, 0, 0]);
+    this.background = new Material(0,[0.02, 0.03, 0.05], 1.0, [0, 0, 0]);
   }
   newSphere() { var o = new Sphere(...arguments); this.objects.push(o); return o; }
   newPlane() { var o = new Plane(...arguments); this.objects.push(o); return o; }
@@ -462,14 +466,15 @@ var SceneList = [
       bunnyModel.generateBVH();
       //console.log(rook)
 
-      var matWhite  = new Material([0.8, 0.8, 0.8], 1.0, [0, 0, 0]);
-      var matRed    = new Material([0.8, 0.2, 0.2], 1.0, [0, 0, 0]);
-      var matGreen  = new Material([0.2, 0.8, 0.2], 1.0, [0, 0, 0]);
-      var matMirror = new Material([1.0, 1.0, 1.0], 0.0, [0, 0, 0]);
-      var matLight  = new Material([0.0, 0.0, 0.0], 1.0, [15, 15, 15]);
+      var matWhite  = new Material(0,[0.8, 0.8, 0.8], 1.0, [0, 0, 0]);
+      var matRed    = new Material(0,[0.8, 0.2, 0.2], 1.0, [0, 0, 0]);
+      var matGreen  = new Material(0,[0.2, 0.8, 0.2], 1.0, [0, 0, 0]);
+      var matCeramic = new Material(0,[0.9, 0.9, 0.9], 0.0, [0, 0, 0]);
+      var matMetal = new Material(1,[0.8, 0.9, 0.8], 0.0, [0, 0, 0]);
+      var matLight  = new Material(0,[0.0, 0.0, 0.0], 1.0, [15, 15, 15]);
       
       // Set up the robust POM material!
-      var toyBox = new Material([1.0, 1.0, 1.0], 0.5, [0, 0, 0], {
+      var toyBox = new Material(0,[1.0, 1.0, 1.0], 0.5, [0, 0, 0], {
         albedoTex: woodTex,
         normalTex: normalTex,
         heightTex: dispTex,
@@ -480,25 +485,29 @@ var SceneList = [
         heightOffset: 0    // Shifts where the surface starts
       });
 
-      scene.newPlane(matWhite, 0, 1, 0, 0);    // Floor (POM Textured)
-      scene.newPlane(matWhite, 0, -1, 0, -3.5);   // Ceiling
-      scene.newPlane(matWhite, 0, 0, 1, -3.0);    // Back wall
-      scene.newPlane(matWhite, 0, 0, -1, 5.0);    // Back wall
+      var matGlass = new Material(2,[0.2, 0.2, 1.0], 0.0, [0, 0, 0]);
+      var matRedGlass = new Material(2,[1.0, 0.2, 0.2], 0.0, [0, 0, 0]);
+      var matUraniumGlass = new Material(2,[0.4, 1.0, 0.4], 1.0, [0, 0.01, 0]);
+
+      scene.newPlane(matCeramic, 0, 1, 0, 0);    // Floor (POM Textured)
+      scene.newPlane(matCeramic, 0, -1, 0, -3.5);   // Ceiling
+      scene.newPlane(matMetal, 0, 0, 1, -3.0);    // Back wall
+      scene.newPlane(matMetal, 0, 0, -1, -10.0);    // Front wall
       scene.newPlane(matRed, 1, 0, 0, -2.5);      // Left wall
       scene.newPlane(matGreen, -1, 0, 0, -2.5);   // Right wall
       
       scene.newSphere(matLight, 0, 3.5, 0, 0.5);
-      scene.newSphere(matMirror, -1.6, 0.5, -1.4, 0.5);
+      //scene.newSphere(matGlass, -1.6, 0.5, -1.4, 0.5);
 
-      var bunnyMaterial = new Material([1.0, 1.0, 1.0], 0.5, [0, 0, 0], {
+      var bunnyMaterial = new Material(0,[1.0, 1.0, 1.0], 0.5, [0, 0, 0], {
         albedoTex: bunnyColor,
         normalTex: bunnyNormal,
         uvScale: [1.0, -1.0],
       });
-      var model = scene.newModel(bunnyMaterial,bunnyModel);
+      var model = scene.newModel(matGlass,bunnyModel);
       model.translate(0,1,0);
 
-      var model2 = scene.newModel(matMirror,bunnyModel);
+      var model2 = scene.newModel(matRedGlass,bunnyModel);
       model2.scaleMult(0.5,0.5,0.5);
       model2.translate(-1,0.5,1);
 
@@ -584,19 +593,24 @@ class Renderer {
       let aIdx = m.albedoTex ? (m.albedoTex.texIndex !== undefined ? m.albedoTex.texIndex : -1) : -1;
       let nIdx = m.normalTex ? (m.normalTex.texIndex !== undefined ? m.normalTex.texIndex : -1) : -1;
       let hIdx = m.heightTex ? (m.heightTex.texIndex !== undefined ? m.heightTex.texIndex : -1) : -1;
+      let rIdx = m.roughnessTex ? (m.roughnessTex.texIndex !== undefined ? m.roughnessTex.texIndex : -1) : -1;
       if (m.heightTex) hasHeightMaps = true;
 
       // Bulk set Albedo and Emittance (Indices 0-7)
       matData.set([...m.color, m.roughness], base);
-      matData.set([...m.emittance, 0], base + 4);
+      matData.set(m.emittance, base + 4); 
+      matView.setInt32(byteBase + 28, m.type, true); // material_type at byte 28
 
-      // Set Integer Texture IDs (Indices 8-10)
+      // Set Integer Texture IDs (Indices 8-11)
       matView.setInt32(byteBase + 32, aIdx, true);
       matView.setInt32(byteBase + 36, nIdx, true);
       matView.setInt32(byteBase + 40, hIdx, true);
+      matView.setInt32(byteBase + 44, rIdx, true);
 
       // Bulk set UV Scale and Height Params (Indices 12-13 and 16-19)
       matData.set(m.uvScale, base + 12);
+      matView.setFloat32(byteBase + 56, m.ior, true); // ior (Float index 14)
+      matView.setFloat32(byteBase + 60, m.concentration, true); // ior (Float index 15)
       matData.set([m.normalMultiplier, m.heightMultiplier, m.heightSamp, m.heightOffset], base + 16);
     });
 
