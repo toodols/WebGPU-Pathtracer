@@ -726,17 +726,17 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
       let specular = reflect(ray.direction, ctx.normal);
       
       // Simple Schlick approximation for plastic highlights
-      let F0 = 0.04; 
+      let F0 = mat.ior; // 0.04 for 1.5 
       let F = F0 + (1.0 - F0) * pow(1.0 - max(0.0, dot(-ray.direction, ctx.normal)), 5.0);
       
       if (rand_pcg() < F) {
         ray.direction = normalize(mix(specular, ctx.normal + random_unit_vector(), roughness));
       } else {
         ray.direction = diffuse;
+        throughput *= ctx.albedo;
       }
       
       ray.origin = hit_pos + ctx.normal * 0.001;
-      throughput *= ctx.albedo;
     }
 
     // --- HEIGHTMAP / POM LOGIC ---
