@@ -79,6 +79,29 @@ class Material {
     this.concentration = options.concentration || 1;
   }
 }
+Material.getSchema = function(m) {
+  if (!m) m = {};
+  let aIdx = m.albedoTex ? (m.albedoTex.texIndex !== undefined ? m.albedoTex.texIndex : -1) : -1;
+  let nIdx = m.normalTex ? (m.normalTex.texIndex !== undefined ? m.normalTex.texIndex : -1) : -1;
+  let hIdx = m.heightTex ? (m.heightTex.texIndex !== undefined ? m.heightTex.texIndex : -1) : -1;
+  let rIdx = m.roughnessTex ? (m.roughnessTex.texIndex !== undefined ? m.roughnessTex.texIndex : -1) : -1;
+  var ior = m.ior;
+  if (m.type == 0) ior = ((ior-1)/(ior+1)) ** 2;
+  return [
+    {type: "vec3f", data: m.color},
+    {type: "f32", data: m.roughness},
+    {type: "vec3f", data: m.emittance},
+    {type: "i32", data: m.type},
+    {type: "i32", data: aIdx},
+    {type: "i32", data: nIdx},
+    {type: "i32", data: hIdx},
+    {type: "i32", data: rIdx},
+    {type: "vec2f", data: m.uvScale},
+    {type: "f32", data: ior},
+    {type: "f32", data: m.concentration},
+    {type: "vec4f", data: [m.normalMultiplier, m.heightMultiplier, m.heightSamp, m.heightOffset]},
+  ];
+}
 
 class Primitive {
   constructor(material) {
@@ -162,6 +185,13 @@ class Sphere extends Primitive {
     this.updateMatrix();
   }
 }
+Sphere.getSchema = function(sphere) {
+  if (!sphere) sphere = {material:{_index:-1}};
+  return [
+    { type:"mat4x4f", data: sphere.invMatrix },
+    { type:"i32", data: sphere.material._index },
+  ];
+}
 
 class Cube extends Primitive {
   constructor(material, minX, minY, minZ, maxX, maxY, maxZ) {
@@ -172,6 +202,89 @@ class Cube extends Primitive {
     this.updateMatrix();
   }
 }
+Cube.getSchema = function(cube) {
+  if (!cube) cube = {material:{_index:-1}};
+  return [
+    { type:"mat4x4f", data: cube.invMatrix },
+    { type:"i32", data: cube.material._index },
+  ];
+}
+
+class Frustum extends Primitive {
+  constructor(material, top_radius = 0.5) {
+    super(material);
+    this.type = "Frustum";
+    this.top_radius = top_radius; // In this context, it will act as a ratio
+  }
+
+  orient(x1, y1, z1, r1, x2, y2, z2, r2) {
+    const p1 = vec3.fromValues(x1, y1, z1);
+    const p2 = vec3.fromValues(x2, y2, z2);
+    const dir = vec3.create();
+
+    // 1. Determine which end is the "Base" (y=0)
+    // We want the wider end to be the base so top_radius is always <= 1.0
+    if (r1 >= r2) {
+      vec3.set(this.position, x1, y1, z1); // Start at P1
+      vec3.subtract(dir, p2, p1);          // Point toward P2
+      const h = vec3.length(dir);
+      vec3.set(this.scale, r1, h, r1);     // Width is r1, height is distance
+      this.top_radius = (r1 > 0) ? r2 / r1 : 0;
+    } else {
+      vec3.set(this.position, x2, y2, z2); // Start at P2
+      vec3.subtract(dir, p1, p2);          // Point toward P1
+      const h = vec3.length(dir);
+      vec3.set(this.scale, r2, h, r2);     // Width is r2, height is distance
+      this.top_radius = (r2 > 0) ? r1 / r2 : 0;
+    }
+
+    // 2. Align Local Y (0,1,0) to the segment direction
+    const dist = vec3.length(dir);
+    if (dist > 1e-6) {
+      vec3.normalize(dir, dir);
+      quat.rotationTo(this.rotation, [0, 1, 0], dir);
+    } else {
+      quat.identity(this.rotation);
+    }
+
+    this.updateMatrix();
+    return this;
+  }
+}
+Frustum.getSchema = function(frustum) {
+  if (!frustum) frustum = {material:{_index:-1}};
+  return [
+    { type: "mat4x4f", data: frustum.invMatrix },
+    { type: "i32", data: frustum.material._index },
+    { type: "f32", data: frustum.top_radius },
+  ];
+}
+
+class Torus extends Primitive {
+  constructor(material, outerRadius = 1.0, innerRadius = 0.3) {
+    super(material);
+    this.type = "Torus";
+    this.setRadii(outerRadius, innerRadius);
+  }
+
+  setRadii(outer, inner) {
+    // We fix the local Outer Radius (R) to 1.0
+    // So we scale the entire object by 'outer'
+    this.scaleSet(outer, outer, outer);
+    
+    // The inner radius (r) must be stored as a ratio relative to the outer radius
+    this.innerRadius = inner / outer; 
+    return this;
+  }
+}
+Torus.getSchema = function(torus) {
+  if (!torus) torus = {material:{_index:-1}, innerRadius: 0};
+  return [
+    { type: "mat4x4f", data: torus.invMatrix },
+    { type: "f32", data: torus.material._index },
+    { type: "f32", data: torus.innerRadius },
+  ];
+}
 
 class Plane {
   constructor(material, nx, ny, nz, d) {
@@ -181,7 +294,14 @@ class Plane {
     this.type = "Plane";
   }
 }
-
+Plane.getSchema = function(plane) {
+  if (!plane) plane = {material:{_index:-1}};
+  return [
+    { type:"vec3f", data: plane.normal },
+    { type:"f32", data: plane.d },
+    { type:"i32", data: plane.material._index },
+  ];
+}
 
 class AABB {
   constructor() {
@@ -330,9 +450,9 @@ class ModelData {
     this.nodes = [];
     this.flatTriangles = [];
 
-    const flatten = (node) => {
+    const flatten = (node,parent) => {
       const index = this.nodes.length;
-      const flatNode = { min: node.min, max: node.max, num_triangles: 0, next: 0 };
+      const flatNode = { min: node.min, max: node.max, num_triangles: 0, next: 0, parent: parent };
       this.nodes.push(flatNode);
 
       if (node.indices) {
@@ -342,13 +462,13 @@ class ModelData {
           this.flatTriangles.push(this.triangles[idx]);
         }
       } else {
-        flatten(node.left);
-        flatNode.next = flatten(node.right); // index of right child
+        flatten(node.left,index);
+        flatNode.next = flatten(node.right,index); // index of right child
       }
       return index;
     };
 
-    flatten(bvhRoot);
+    flatten(bvhRoot,-1);
   }
 
   bakeTransform(matrix) {
@@ -360,7 +480,7 @@ class ModelData {
     }
   }
 
-  renormalize() {
+  renormalize(bottom) {
     let aabb = new AABB();
     for (let t of this.triangles) {
       aabb.expand(t.v0); aabb.expand(t.v1); aabb.expand(t.v2);
@@ -369,6 +489,7 @@ class ModelData {
     let size = Math.max(aabb.max[0]-aabb.min[0], aabb.max[1]-aabb.min[1], aabb.max[2]-aabb.min[2]);
     let scale = 2.0 / size;
     let m = mat4.create();
+    if (bottom) center[1] = 0;
     mat4.scale(m, m, [scale, scale, scale]);
     mat4.translate(m, m, [-center[0], -center[1], -center[2]]);
     this.bakeTransform(m);
@@ -381,6 +502,63 @@ class ModelData {
       let n = vec3.cross([], e1, e2);
       vec3.normalize(n, n);
       t.n0 = [...n]; t.n1 = [...n]; t.n2 = [...n];
+    }
+  }
+
+  calculateSmoothNormals(weightByArea = true) {
+    // 1. Map to accumulate normals for each unique vertex position
+    // Key: "x,y,z" string, Value: [nx, ny, nz]
+    const vertexNormalMap = new Map();
+
+    // 2. First pass: Calculate face normals and accumulate
+    for (let tri of this.triangles) {
+      // Edge vectors
+      const e1 = [tri.v1[0] - tri.v0[0], tri.v1[1] - tri.v0[1], tri.v1[2] - tri.v0[2]];
+      const e2 = [tri.v2[0] - tri.v0[0], tri.v2[1] - tri.v0[1], tri.v2[2] - tri.v0[2]];
+      
+      // Cross product (Face Normal * 2 * Area)
+      const nx = e1[1] * e2[2] - e1[2] * e2[1];
+      const ny = e1[2] * e2[0] - e1[0] * e2[2];
+      const nz = e1[0] * e2[1] - e1[1] * e2[0];
+      
+      let faceNormal = [nx, ny, nz];
+      const crossProductMag = Math.sqrt(nx * nx + ny * ny + nz * nz);
+
+      if (crossProductMag > 1e-10) {
+        if (weightByArea) {
+          // The magnitude of the cross product is already proportional to 2 * Area.
+          // Keeping the vector as-is automatically weights the sum by triangle size.
+          faceNormal = [nx, ny, nz]; 
+        } else {
+          // Normalizing here gives every triangle 1.0 "vote" regardless of size.
+          faceNormal = [nx / crossProductMag, ny / crossProductMag, nz / crossProductMag];
+        }
+
+        // Accumulate for all 3 vertices
+        [tri.v0, tri.v1, tri.v2].forEach(v => {
+          const key = `${v[0].toFixed(6)},${v[1].toFixed(6)},${v[2].toFixed(6)}`;
+          if (!vertexNormalMap.has(key)) {
+            vertexNormalMap.set(key, [0, 0, 0]);
+          }
+          const n = vertexNormalMap.get(key);
+          n[0] += faceNormal[0];
+          n[1] += faceNormal[1];
+          n[2] += faceNormal[2];
+        });
+      }
+    }
+
+    // 3. Second pass: Normalize and assign
+    for (let tri of this.triangles) {
+      [tri.v0, tri.v1, tri.v2].forEach((v, i) => {
+        const key = `${v[0].toFixed(6)},${v[1].toFixed(6)},${v[2].toFixed(6)}`;
+        const n = vertexNormalMap.get(key);
+        
+        const len = Math.sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+        const finalN = len > 1e-10 ? [n[0] / len, n[1] / len, n[2] / len] : [0, 1, 0];
+
+        tri[`n${i}`] = finalN;
+      });
     }
   }
 
@@ -399,24 +577,6 @@ class Model extends Primitive {
     this.model = model;
     this.type = "Model";
   }
-  getNodes() {
-    return this.model.nodes;
-    return [ {min: [-1,-1,-1], max:[1,1,1], num_triangles: 2, next: 0} ];
-  }
-  getTriangles() {
-    return this.model.flatTriangles;
-    return [ {
-      v0:[0,0,0], v1:[1,0,0], v2:[0,1,0], 
-      n0:[0,0,1], n1:[0,0,1], n2:[0,0,1], 
-      u0:[0,0], u1:[1,0], u2:[0,1] 
-     }, {
-      v0:[1,1,0], v1:[1,0,0], v2:[0,1,0], 
-      n0:[0,0,1], n1:[0,0,1], n2:[0,0,1], 
-      u0:[0,0], u1:[1,0], u2:[0,1] 
-     } ];
-  }
-  //getMinCorner() { return this.model.getMinCorner(); }
-  //getMaxCorner() { return this.model.getMaxCorner(); }
 }
 
 class Scene {
@@ -427,8 +587,10 @@ class Scene {
     this.background = null;
   }
   newSphere() { var o = new Sphere(...arguments); this.objects.push(o); return o; }
-  newPlane() { var o = new Plane(...arguments); this.objects.push(o); return o; }
   newCube() { var o = new Cube(...arguments); this.objects.push(o); return o; }
+  newPlane() { var o = new Plane(...arguments); this.objects.push(o); return o; }
+  newFrustum() { var o = new Frustum(...arguments); this.objects.push(o); return o; }
+  newTorus() { var o = new Torus(...arguments); this.objects.push(o); return o; }
   newModel() { var o = new Model(...arguments); this.objects.push(o); return o; }
   
   getMaterials() {
@@ -486,109 +648,6 @@ class Camera {
   }
 }
 
-var SelectedScene = 0;
-var SceneList = [
-  {
-    name: "POM & Normals Box",
-    load: async function() {},
-    create: async function(canvas) {
-      canvas.width = 1024;
-      canvas.height = 768;
-
-      var scene = new Scene(canvas);
-
-      var cam = scene.camera;
-      //cam.lookAt(0,0.5,0);
-      //cam.setPosition(0,0,4.5);
-      
-      // Preload our new textures
-      var woodTex = new Texture('https://i.ibb.co/0RnQ8mp0/wood.png');
-      var normalTex = new Texture('https://i.ibb.co/dJzqsKry/normal.png');
-      var dispTex = new Texture('https://i.ibb.co/0ywvFnyh/disp.png');
-
-      var bunnyModel = new ModelData('assets/bunny/model.obj');
-      var bunnyColor = new Texture('assets/bunny/color.jpg');
-      var bunnyNormal = new Texture('assets/bunny/normal.png');
-
-      //scene.background = new HDRTexture([0.8,0.85,1,1]);
-      //scene.background = new HDRTexture('https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/2k/studio_small_09_2k.hdr');
-      //scene.background = new HDRTexture('https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/2k/venice_sunset_2k.hdr');
-      //scene.background = new HDRTexture('https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/2k/abandoned_greenhouse_2k.hdr');
-      //scene.background = new HDRTexture('assets/cape_hill_4k.hdr');
-
-      await Promise.all([
-        woodTex.loaded, 
-        normalTex.loaded, 
-        dispTex.loaded, 
-        bunnyModel.loaded,
-        bunnyColor.loaded,
-        bunnyNormal.loaded,
-        //scene.background.loaded
-      ]);
-      bunnyModel.renormalize();
-      //rook.calculateVertexNormals();
-      //rook.calculateSphericalUVs();
-      bunnyModel.generateBVH();
-      //console.log(rook)
-
-      var matWhite = new Material(0,[0.8, 0.8, 0.8], 1.0, [0, 0, 0]);
-      var matRed = new Material(0,[0.8, 0.2, 0.2], 1.0, [0, 0, 0]);
-      var matGreen = new Material(0,[0.2, 0.8, 0.2], 1.0, [0, 0, 0]);
-      var matCeramic = new Material(0,[0.9, 0.9, 0.9], 0.0, [0, 0, 0]);
-      var matMetal = new Material(1,[0.8, 0.9, 0.8], 0.0, [0, 0, 0]);
-      var matLight = new Material(0,[0.0, 0.0, 0.0], 1.0, [15, 15, 15]);
-      
-      // Set up the robust POM material!
-      var toyBox = new Material(0,[1.0, 1.0, 1.0], 0.5, [0, 0, 0], {
-        albedoTex: woodTex,
-        normalTex: normalTex,
-        heightTex: dispTex,
-        uvScale: [1.0, 1.0], // Scale of the texture on the plane
-        normalMultiplier: 1,
-        heightMultiplier: 0.15, // Positive means Depth Map (white=deep). Negative means Height Map (white=high).
-        heightSamp: 32,      // Number of raymarch steps
-        heightOffset: 0    // Shifts where the surface starts
-      });
-
-      var matGlass = new Material(2,[1.0, 1.0, 1.0], 0.0, [0, 0, 0]);
-      var matBlueGlass = new Material(2,[0.2, 0.2, 1.0], 1.0, [0, 0, 0]);
-      var matRedGlass = new Material(2,[1.0, 0.2, 0.2], 0.0, [0, 0, 0]);
-      var matUraniumGlass = new Material(2,[0.4, 1.0, 0.4], 0.0, [0, 0.01, 0]);
-
-      scene.newPlane(matCeramic, 0, 1, 0, 0);    // Floor (POM Textured)
-      scene.newPlane(matWhite, 0, -1, 0, -3.5);   // Ceiling
-      scene.newPlane(matMetal, 0, 0, 1, -3.0);    // Back wall
-      scene.newPlane(matMetal, 0, 0, -1, -10.0);    // Front wall
-      scene.newPlane(matRed, 1, 0, 0, -2.5);      // Left wall
-      scene.newPlane(matGreen, -1, 0, 0, -2.5);   // Right wall
-      
-      scene.newSphere(matLight, 0, 3.5, 0, 0.5);
-      //scene.newSphere(matBlueGlass, -1.6, 0.5, -1.4, 0.5);
-      //scene.newSphere(matGlass, 0, 0, 0, 2);
-
-      var bunnyMaterial = new Material(0,[1.0, 1.0, 1.0], 0.5, [0, 0, 0], {
-        albedoTex: bunnyColor,
-        normalTex: bunnyNormal,
-        uvScale: [1.0, -1.0],
-      });
-      var model = scene.newModel(matBlueGlass,bunnyModel);
-      model.translate(0,1,0);
-
-      var model2 = scene.newModel(matRedGlass,bunnyModel);
-      model2.scaleMult(0.5,0.5,0.5);
-      model2.translate(-1,0.5,1);
-
-      //let box = scene.newCube(toyBox, 0.2, 0.4, -0.2, 1.0, 1.2, 0.6);
-      //quat.setAxisAngle(box.rotation, [0, 1, 0], -20 * Math.PI / 180); 
-      //box.updateMatrix();
-
-      scene.bounces = 24;
-
-      return scene;
-    }
-  }
-];
-
 async function loadText(url) {
   var res = await fetch(url,{});
   return await res.text();
@@ -607,12 +666,71 @@ class Renderer {
   async init() {
     const { context } = this;
     const adapter = await navigator.gpu.requestAdapter();
-    this.device = await adapter.requestDevice();
+    const maxBuffers = adapter.limits.maxStorageBuffersPerShaderStage;
+    const maxSize = adapter.limits.maxStorageBufferBindingSize;
+    console.log(`Your GPU supports up to ${maxBuffers} storage buffers.`);
+    console.log(`Your GPU supports up to ${maxSize} binding size.`);
+    this.device = await adapter.requestDevice({
+      requiredLimits: {
+        // Request the maximum the hardware allows
+        maxStorageBuffersPerShaderStage: maxBuffers,
+        // You might also want to bump this for your accumulation buffer
+        maxStorageBufferBindingSize: maxSize,
+      }
+    });
     context.configure({ 
       device: this.device, 
       format: 'rgba8unorm', 
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST 
     });
+  }
+
+  packDataFromSchema(objects, getSchema) {
+    // 1. Get a sample schema to calculate stride
+    // We use a prototype instance if the array is empty
+    const sampleObj = objects.length > 0 ? objects[0] : false;
+    const schema = getSchema(sampleObj);
+    
+    let bytesPerObject = 0;
+    const sizes = { vec2f: 8, vec3f: 12, vec4f: 16, f32: 4, i32: 4, u32: 4, mat2x2f: 16, mat3x3f: 36, mat4x4f: 64 };
+    schema.forEach(item => {
+      bytesPerObject += sizes[item.type];
+    });
+
+    // 2. Align to 16 bytes (WGSL Requirement)
+    const remainder = bytesPerObject % 16;
+    if (remainder !== 0) bytesPerObject += (16 - remainder);
+    const strideFloats = bytesPerObject / 4;
+
+    // 3. Handle Empty Arrays: Create 1 dummy object if count is 0
+    const count = Math.max(1, objects.length);
+    const data = new Float32Array(count * strideFloats);
+    const view = new DataView(data.buffer);
+
+    // 4. If we actually have objects, fill them
+    if (objects.length <= 0) return { data: data, size: bytesPerObject };
+    objects.forEach((obj, objIdx) => {
+      const baseByte = objIdx * bytesPerObject;
+      let offset = 0;
+      getSchema(obj).forEach(item => {
+        const addr = baseByte + offset;
+        if (!item.padding) {
+          if (item.type === "vec2f" || item.type === "vec3f" || item.type == "vec4f" || item.type === "mat2x2f" || item.type === "mat3x3f" || item.type === "mat4x4f") {
+            data.set(item.data, addr / 4);
+          } else if (item.type === "f32") {
+            view.setFloat32(addr, item.data, true);
+          } else if (item.type === "i32") {
+            view.setInt32(addr, item.data, true);
+          } else if (item.type === "u32") {
+            view.setUint32(addr, item.data, true);
+          }
+        }
+        // Increment offset based on type
+        offset += item.padding ? 4 : sizes[item.type];
+      });
+    });
+
+    return { data: data, size: bytesPerObject };
   }
 
   async setScene(scene) {
@@ -681,72 +799,35 @@ class Renderer {
     });
 
     // --- 1. EXTRACT & PACK MATERIALS ---
+    
+    // --- 1. EXTRACT & PACK MATERIALS ---
     const mats = scene.getMaterials();
-    // 20 floats = 80 bytes per material 
-    const matData = new Float32Array(Math.max(1, mats.length) * 20); 
-    const matView = new DataView(matData.buffer);
     var hasHeightMaps = false;
     mats.forEach((m, i) => {
       m._index = i;
-      const base = i * 20; // Float index
-      const byteBase = base * 4; // Byte offset
-
-      m._index = i;
-      let aIdx = m.albedoTex ? (m.albedoTex.texIndex !== undefined ? m.albedoTex.texIndex : -1) : -1;
-      let nIdx = m.normalTex ? (m.normalTex.texIndex !== undefined ? m.normalTex.texIndex : -1) : -1;
-      let hIdx = m.heightTex ? (m.heightTex.texIndex !== undefined ? m.heightTex.texIndex : -1) : -1;
-      let rIdx = m.roughnessTex ? (m.roughnessTex.texIndex !== undefined ? m.roughnessTex.texIndex : -1) : -1;
       if (m.heightTex) hasHeightMaps = true;
-
-      // Bulk set Albedo and Emittance (Indices 0-7)
-      matData.set([...m.color, m.roughness], base);
-      matData.set(m.emittance, base + 4); 
-      matView.setInt32(byteBase + 28, m.type, true); // material_type at byte 28
-
-      // Set Integer Texture IDs (Indices 8-11)
-      matView.setInt32(byteBase + 32, aIdx, true);
-      matView.setInt32(byteBase + 36, nIdx, true);
-      matView.setInt32(byteBase + 40, hIdx, true);
-      matView.setInt32(byteBase + 44, rIdx, true);
-
-      // Bulk set UV Scale and Height Params (Indices 12-13 and 16-19)
-      matData.set(m.uvScale, base + 12);
-      var ior = m.ior;
-      if (m.type == 0) ior = ((ior-1)/(ior+1)) ** 2;
-      matView.setFloat32(byteBase + 56, ior, true); // ior (Float index 14)
-      matView.setFloat32(byteBase + 60, m.concentration, true); // ior (Float index 15)
-      matData.set([m.normalMultiplier, m.heightMultiplier, m.heightSamp, m.heightOffset], base + 16);
     });
+    const { data: matData, size: matSize } = this.packDataFromSchema(mats,Material.getSchema);
 
     const spheres = scene.objects.filter(o => o.type === "Sphere");
     const hasSpheres = spheres.length > 0;
-    const sphereData = new Float32Array(Math.max(1, spheres.length) * 20);
-    const sphereView = new DataView(sphereData.buffer);
-    spheres.forEach((s, i) => {
-      const base = i * 20;
-      sphereData.set(s.invMatrix, base); 
-      sphereView.setInt32((base + 16) * 4, s.material._index, true); 
-    });
+    const { data: sphereData, size: sphereSize } = this.packDataFromSchema(spheres,Sphere.getSchema);
 
     const cubes = scene.objects.filter(o => o.type === "Cube");
     const hasCubes = cubes.length > 0;
-    const cubeData = new Float32Array(Math.max(1, cubes.length) * 20);
-    const cubeView = new DataView(cubeData.buffer); 
-    cubes.forEach((c, i) => {
-      const base = i * 20;
-      cubeData.set(c.invMatrix, base);
-      cubeView.setInt32((base + 16) * 4, c.material._index, true); 
-    });
+    const { data: cubeData, size: cubeSize } = this.packDataFromSchema(cubes,Cube.getSchema);
 
     const planes = scene.objects.filter(o => o.type === "Plane");
     const hasPlanes = planes.length > 0;
-    const planeData = new Float32Array(Math.max(1, planes.length) * 8);
-    const planeView = new DataView(planeData.buffer);
-    planes.forEach((p, i) => {
-      const base = i * 8;
-      planeData.set([...p.normal, p.d], base);
-      planeView.setInt32((base + 4) * 4, p.material._index, true);
-    });
+    const { data: planeData, size: planeSize } = this.packDataFromSchema(planes,Plane.getSchema);
+    
+    const frustums = scene.objects.filter(o => o.type === "Frustum");
+    const hasFrustums = frustums.length > 0;
+    const { data: frustumData, size: frustumSize } = this.packDataFromSchema(frustums,Frustum.getSchema);
+    
+    const tori = scene.objects.filter(o => o.type === "Torus");
+    const hasTori = tori.length > 0;
+    const { data: torusData, size: torusSize } = this.packDataFromSchema(tori,Torus.getSchema);
     
     const makeBuf = (data, minSize = 16) => {
       const size = Math.max(minSize, data.byteLength);
@@ -838,10 +919,12 @@ class Renderer {
     const meshBuffer = makeBuf(meshData, 80);
     const bvhBuffer = makeBuf(bvhData, 32);
     const triangleBuffer = makeBuf(triData, 128);
-    const matBuffer = makeBuf(matData, 80);
-    const sphereBuffer = makeBuf(sphereData);
-    const planeBuffer = makeBuf(planeData);
-    const cubeBuffer = makeBuf(cubeData);
+    const matBuffer = makeBuf(matData, matSize);
+    const sphereBuffer = makeBuf(sphereData, sphereSize);
+    const cubeBuffer = makeBuf(cubeData, cubeSize);
+    const planeBuffer = makeBuf(planeData, planeSize);
+    const frustumBuffer = makeBuf(frustumData, frustumSize);
+    const torusBuffer = makeBuf(torusData, torusSize);
 
     const uBuf = this.uBuf = device.createBuffer({ size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const aBuf = device.createBuffer({ size: canvas.width * canvas.height * 16, usage: GPUBufferUsage.STORAGE });
@@ -867,11 +950,13 @@ class Renderer {
         constants: { 
           0: scene.bounces, 
           1: hasSpheres ? 1 : 0, 
-          2: hasPlanes ? 1 : 0, 
-          3: hasCubes ? 1 : 0, 
-          4: hasMeshes ? 1 : 0, 
-          5: hasHeightMaps ? 1 : 0,
-          6: hasSkybox ? 1 : 0,
+          2: hasCubes ? 1 : 0, 
+          3: hasPlanes ? 1 : 0, 
+          4: hasFrustums ? 1 : 0, 
+          5: hasTori ? 1 : 0, 
+          6: hasMeshes ? 1 : 0, 
+          7: hasHeightMaps ? 1 : 0,
+          8: hasSkybox ? 1 : 0,
         }
       } 
     });
@@ -894,21 +979,23 @@ class Renderer {
         { binding: 6, resource: { buffer: triangleBuffer } },
         // Primitives
         { binding: 7, resource: { buffer: sphereBuffer } }, 
-        { binding: 8, resource: { buffer: planeBuffer } },
-        { binding: 9, resource: { buffer: cubeBuffer } },
+        { binding: 8, resource: { buffer: cubeBuffer } },
+        { binding: 9, resource: { buffer: planeBuffer } },
+        { binding: 10, resource: { buffer: frustumBuffer } },
+        { binding: 11, resource: { buffer: torusBuffer } },
         // Expanded Texture Bindings
-        { binding: 10, resource: gpuTextures[0].createView() },
-        { binding: 11, resource: gpuTextures[1].createView() },
-        { binding: 12, resource: gpuTextures[2].createView() },
-        { binding: 13, resource: gpuTextures[3].createView() },
-        { binding: 14, resource: gpuTextures[4].createView() },
-        { binding: 15, resource: gpuTextures[5].createView() },
-        { binding: 16, resource: gpuTextures[6].createView() },
-        { binding: 17, resource: gpuTextures[7].createView() },
-        { binding: 18, resource: sampler },
+        { binding: 12, resource: gpuTextures[0].createView() },
+        { binding: 13, resource: gpuTextures[1].createView() },
+        { binding: 14, resource: gpuTextures[2].createView() },
+        { binding: 15, resource: gpuTextures[3].createView() },
+        { binding: 16, resource: gpuTextures[4].createView() },
+        { binding: 17, resource: gpuTextures[5].createView() },
+        { binding: 18, resource: gpuTextures[6].createView() },
+        { binding: 19, resource: gpuTextures[7].createView() },
+        { binding: 20, resource: sampler },
         //
-        { binding: 19, resource: hdrTextureView },
-        { binding: 20, resource: skySampler }
+        { binding: 21, resource: hdrTextureView },
+        { binding: 22, resource: skySampler }
       ]
     });
 
@@ -943,56 +1030,3 @@ class Renderer {
   }
 }
 
-// --- MAIN ---
-var renderer;
-async function init() {
-  const canvas = document.getElementById("gpuCanvas");
-  //canvas.width = window.innerWidth;
-  //canvas.height = window.innerHeight;
-
-  await SceneList[SelectedScene].load();
-  
-  renderer = new Renderer(canvas);
-  await renderer.init();
-  
-  var scene = await SceneList[SelectedScene].create(canvas);
-  await renderer.setScene(scene);
-
-  var cam = scene.camera;
-  let angleX = 0, angleY = 0, zoom = 4.5; 
-  
-  function updateCamera() {
-    vec3.set(cam.position, 
-      zoom * Math.cos(angleX) * Math.sin(angleY), 
-      zoom * Math.sin(angleX) + 1.0,
-      zoom * Math.cos(angleX) * Math.cos(angleY)
-    );
-    cam.updateRays(); 
-    renderer.frame = 0; 
-  }
-  updateCamera();
-
-  window.onmousemove = (e) => { 
-    if (e.buttons === 1) { 
-      angleY -= e.movementX * 0.005; 
-      angleX = Math.max(-1.5, Math.min(1.5, angleX + e.movementY * 0.005));
-      updateCamera();
-    }
-  };
-  window.onwheel = (e) => {
-    zoom = Math.max(1.0, zoom + e.deltaY * 0.01); 
-    updateCamera();
-  };
-  
-  const sppElement = document.getElementById('spp');
-  const blElement = document.getElementById('bl');
-  blElement.innerText = renderer.scene.bounces;
-  function render() {
-    renderer.render();
-    sppElement.innerText = renderer.frame;
-    requestAnimationFrame(render);
-  }
-  render();
-}
-
-init();
