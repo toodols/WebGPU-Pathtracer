@@ -261,8 +261,8 @@ var SceneList = [
     name: "Random Sphere Forest",
     load: async function() {},
     create: async function(canvas) {
-      canvas.width = 1024;
-      canvas.height = 768;
+      canvas.width = 1024// * 3/4;
+      canvas.height = 768// * 3/4;
       var scene = new Scene(canvas);
       
       // Position camera to look down at the circle
@@ -294,14 +294,13 @@ var SceneList = [
         return new Material(type, color, roughness, [0, 0, 0]);
       }
 
-
       // 2. Add Environment
       scene.newPlane(matGround, 0, 1, 0, 0); // Ground
       //scene.newSphere(matLight, 0, 10, 0, 1); // Sun/Light source
       
       // 3. Generate Non-Intersecting Spheres
       const spheres = [];
-      const maxSpheres = 40;
+      const maxSpheres = 100;
       const spawnRadius = 2.0;
       const minSize = 0.1;
       const maxSize = 0.4;
@@ -336,9 +335,18 @@ var SceneList = [
 
         if (!collision) {
           const mat = getRandomMaterial();
-          const sphereObj = scene.newSphere(mat, x, y, z, radius);
+          var r = rng();
+          if (r < 0.5) {
+            scene.newSphere(mat, x, y, z, radius);
+          } else if (r < 1) {
+            scene.newCube(mat, x-radius, y-radius, z-radius, x+radius, y+radius, z+radius);
+          } else if (r < 0.75) {
+            scene.newFrustum(mat).orient(x, y-radius, z, radius, x, y+radius, z, radius);
+          } else {
+            scene.newTorus(mat,radius*0.75,radius*0.25).translate(x,y-radius*0.5,z);
+          }
           // Store metadata for the next collision check
-          spheres.push({ x, y:y, z, radius });
+          spheres.push({ x, y, z, radius });
         }
       }
 
