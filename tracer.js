@@ -281,7 +281,7 @@ Torus.getSchema = function(torus) {
   if (!torus) torus = {material:{_index:-1}, innerRadius: 0};
   return [
     { type: "mat4x4f", data: torus.invMatrix },
-    { type: "f32", data: torus.material._index },
+    { type: "i32", data: torus.material._index },
     { type: "f32", data: torus.innerRadius },
   ];
 }
@@ -578,6 +578,15 @@ class Model extends Primitive {
     this.type = "Model";
   }
 }
+Model.getSchema = function(mesh) {
+  if (!mesh) mesh = { material: { _index:-1 }, model: { _node_offset: 0, _tri_offset: 0 } };
+  return [
+    { type: "mat4x4f", data: mesh.invMatrix },
+    { type: "i32", data: mesh.material._index },
+    { type: "u32", data: mesh.model._node_offset },
+    { type: "u32", data: mesh.model._tri_offset },
+  ];
+}
 
 class Scene {
   constructor(canvas) {
@@ -854,22 +863,14 @@ class Renderer {
     let totalNodes = 0;
     let totalTriangles = 0;
 
-    // Map each unique model to its starting offset in the global buffers
-    const modelOffsets = new Map();
-
     uniqueModels.forEach(m => {
-      modelOffsets.set(m, {
-        nodeOffset: totalNodes,
-        triOffset: totalTriangles
-      });
+      m._node_offset = totalNodes;
+      m._tri_offset = totalTriangles;
       totalNodes += m.nodes.length;
       totalTriangles += m.flatTriangles.length;
     });
 
     // --- 2. ALLOCATE BUFFERS ---
-    const meshData = new Float32Array(Math.max(1, modelObjects.length) * 20);
-    const meshView = new DataView(meshData.buffer);
-
     const bvhData = new Float32Array(Math.max(1, totalNodes) * 8);
     const bvhView = new DataView(bvhData.buffer);
 
@@ -877,11 +878,9 @@ class Renderer {
 
     // --- 3. FILL SHARED DATA (BVH & Triangles) ---
     uniqueModels.forEach(m => {
-      const { nodeOffset, triOffset } = modelOffsets.get(m);
-
       // Pack BVH Nodes for this model
       m.nodes.forEach((node, nIdx) => {
-        const nBase = (nodeOffset + nIdx) * 8;
+        const nBase = (m._node_offset + nIdx) * 8;
         bvhData.set(node.min, nBase);
         bvhView.setUint32((nBase + 3) * 4, node.num_triangles, true);
         bvhData.set(node.max, nBase + 4);
@@ -890,7 +889,7 @@ class Renderer {
 
       // Pack Triangles for this model
       m.flatTriangles.forEach((tri, tIdx) => {
-        const tBase = (triOffset + tIdx) * 32;
+        const tBase = (m._tri_offset + tIdx) * 32;
         triData.set([...tri.v0, 0], tBase + 0);
         triData.set([...tri.v1, 0], tBase + 4);
         triData.set([...tri.v2, 0], tBase + 8);
@@ -902,21 +901,10 @@ class Renderer {
     });
 
     // --- 4. FILL MESH INSTANCES ---
-    modelObjects.forEach((obj, i) => {
-      const mBase = i * 20;
-      const offsets = modelOffsets.get(obj.model);
-      
-      // Every MeshInstance gets its own transform and material
-      meshData.set(obj.invMatrix, mBase);
-      
-      // But multiple MeshInstances can point to the same nodeOffset and triOffset
-      meshView.setUint32((mBase + 16) * 4, offsets.nodeOffset, true);
-      meshView.setUint32((mBase + 17) * 4, offsets.triOffset, true);
-      meshView.setInt32((mBase + 18) * 4, obj.material._index, true);
-    });
+    const { data: meshData, size: meshSize } = this.packDataFromSchema(modelObjects,Model.getSchema);
 
     // --- 5. CREATE THE BUFFERS ---
-    const meshBuffer = makeBuf(meshData, 80);
+    const meshBuffer = makeBuf(meshData, meshSize);
     const bvhBuffer = makeBuf(bvhData, 32);
     const triangleBuffer = makeBuf(triData, 128);
     const matBuffer = makeBuf(matData, matSize);
