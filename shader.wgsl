@@ -8,7 +8,7 @@
 @id(7) override HAS_HEIGHTMAPS: bool = true;
 @id(8) override HAS_SKYBOX: bool = true;
 
-struct Ray { 
+struct Ray {
   origin: vec3f,
   direction: vec3f
 };
@@ -37,7 +37,8 @@ struct Material {
 struct TransformedObject { 
   inv_matrix: mat4x4f,
   material_idx: i32,
-  pad0: f32, pad1: f32, pad2: f32
+  object_type: i32,
+  pad0: f32, pad1: f32
 };
 
 struct Plane { 
@@ -51,14 +52,12 @@ struct Frustum {
   inv_matrix: mat4x4f,
   material_idx: i32,
   top_radius: f32,
-  pad0: f32, pad1: f32
 };
 
 struct Torus { 
   inv_matrix: mat4x4f,
   material_idx: i32,
   inner_radius: f32,
-  pad0: f32, pad1: f32
 };
 
 struct Triangle {
@@ -90,37 +89,34 @@ struct SurfaceHit {
   t: f32, m_idx: i32,
   hit_p: vec3f, hit_n: vec3f, hit_uv: vec2f,
   tangent: vec3f, bitangent: vec3f,
-  //count: i32,
+  count: i32,
 };
 
 @group(0) @binding(0) var<uniform> params: SceneParams;
 @group(0) @binding(1) var<storage, read_write> accum_buffer: array<vec4f>;
 @group(0) @binding(2) var output_tex: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(3) var<storage, read> materials: array<Material>;
-@group(0) @binding(4) var<storage, read> meshes: array<MeshInstance>;
-@group(0) @binding(5) var<storage, read> bvh_nodes: array<BVHNode>;
-@group(0) @binding(6) var<storage, read> triangles: array<Triangle>;
-
-@group(0) @binding(7) var<storage, read> spheres: array<TransformedObject>;
-@group(0) @binding(8) var<storage, read> cubes: array<TransformedObject>;
+@group(0) @binding(4) var<storage, read> objects: array<TransformedObject>;
+@group(0) @binding(5) var<storage, read> tlas_nodes: array<BVHNode>;
+@group(0) @binding(6) var<storage, read> meshes: array<MeshInstance>;
+@group(0) @binding(7) var<storage, read> bvh_nodes: array<BVHNode>;
+@group(0) @binding(8) var<storage, read> triangles: array<Triangle>;
 @group(0) @binding(9) var<storage, read> planes: array<Plane>;
-@group(0) @binding(10) var<storage, read> frustums: array<Frustum>;
-@group(0) @binding(11) var<storage, read> tori: array<Torus>;
 
 // 8 Texture Bindings for rich materials
-@group(0) @binding(12) var t0: texture_2d<f32>;
-@group(0) @binding(13) var t1: texture_2d<f32>;
-@group(0) @binding(14) var t2: texture_2d<f32>;
-@group(0) @binding(15) var t3: texture_2d<f32>;
-@group(0) @binding(16) var t4: texture_2d<f32>;
-@group(0) @binding(17) var t5: texture_2d<f32>;
-@group(0) @binding(18) var t6: texture_2d<f32>;
-@group(0) @binding(19) var t7: texture_2d<f32>;
-@group(0) @binding(20) var texture_sampler: sampler;
+@group(0) @binding(10) var t0: texture_2d<f32>;
+@group(0) @binding(11) var t1: texture_2d<f32>;
+@group(0) @binding(12) var t2: texture_2d<f32>;
+@group(0) @binding(13) var t3: texture_2d<f32>;
+@group(0) @binding(14) var t4: texture_2d<f32>;
+@group(0) @binding(15) var t5: texture_2d<f32>;
+@group(0) @binding(16) var t6: texture_2d<f32>;
+@group(0) @binding(17) var t7: texture_2d<f32>;
+@group(0) @binding(18) var texture_sampler: sampler;
 
 // skybox
-@group(0) @binding(21) var skyTex: texture_2d<f32>;
-@group(0) @binding(22) var skySampler: sampler;
+@group(0) @binding(19) var skyTex: texture_2d<f32>;
+@group(0) @binding(20) var skySampler: sampler;
 
 var<private> rng_state: u32;
 fn rand_pcg() -> f32 {
@@ -214,10 +210,10 @@ fn trace_mesh(ray_world: Ray, mesh: MeshInstance, hit: ptr<function, SurfaceHit>
   stack[0] = mesh.node_offset; // Start at root node for this mesh
   stack_ptr++;
   let base_t = intersect_aabb(ray_local.origin, inv_dir, bvh_nodes[mesh.node_offset].aabb_min, bvh_nodes[mesh.node_offset].aabb_max);
-  if (base_t < 0.) {return;}
+  if (base_t < 0. || base_t >= (*hit).t) {return;}
 
   while (stack_ptr > 0) {
-    //(*hit).count++;
+    (*hit).count++;
     stack_ptr--;
     let node_idx = stack[stack_ptr];
     let node = bvh_nodes[node_idx];
@@ -599,20 +595,62 @@ fn trace_torus(ray: Ray, tor: Torus, hit: ptr<function, SurfaceHit>) {
   }
 }
 
-fn trace_scene(ray: Ray) -> SurfaceHit {
-  var hit = SurfaceHit(1e10, -1, vec3f(0.0), vec3f(0.0), vec2f(0.0), vec3f(0.0), vec3f(0.0));
-  
-  if (HAS_SPHERES) {
-    for (var i = 0u; i < arrayLength(&spheres); i++) {
-      trace_sphere(ray, spheres[i], &hit);
-    }
-  }
+fn trace_tlas(ray: Ray, hit: ptr<function, SurfaceHit>) {
+  let inv_dir = 1.0 / ray.direction;
 
-  if (HAS_CUBES) {
-    for (var i = 0u; i < arrayLength(&cubes); i++) {
-      trace_cube(ray, cubes[i], &hit);
+  var stack: array<u32, 64>; 
+  var stack_ptr: i32 = 0;
+  
+  stack[0] = 0;
+  stack_ptr++;
+  let base_t = intersect_aabb(ray.origin, inv_dir, tlas_nodes[0].aabb_min, tlas_nodes[0].aabb_max);
+  if (base_t < 0. || base_t >= (*hit).t) {return;}
+
+  while (stack_ptr > 0) {
+    (*hit).count++;
+    stack_ptr--;
+    let node_idx = stack[stack_ptr];
+    let node = tlas_nodes[node_idx];
+
+    //let t_aabb = intersect_aabb(ray.origin, inv_dir, node.aabb_min, node.aabb_max);
+    //if (t_aabb < 0. || t_aabb >= (*hit).t) { continue; }
+
+    if (node.num_triangles > 0u) {
+      // Leaf
+      let start = node.next;
+      let end = start + node.num_triangles;
+      for (var i = start; i < end; i++) {
+        let obj = objects[i];
+        let otype = obj.object_type;
+        if (HAS_SPHERES && otype == 1) { trace_sphere(ray, obj, hit); }
+        else if (HAS_CUBES && otype == 2) { trace_cube(ray, obj, hit); }
+        else if (HAS_FRUSTUMS && otype == 3) { 
+          let frustum = Frustum(obj.inv_matrix,obj.material_idx,obj.pad0);
+          trace_frustum(ray, frustum, hit);
+        } else if (HAS_TORI && otype == 4) { 
+          let torus = Torus(obj.inv_matrix,obj.material_idx,obj.pad0);
+          trace_torus(ray, torus, hit);
+        }
+      }
+    } else {
+      // Inner Node
+      let left_idx = node_idx + 1u;
+      let right_idx = node.next;
+      let left_t = intersect_aabb(ray.origin, inv_dir, tlas_nodes[left_idx].aabb_min, tlas_nodes[left_idx].aabb_max);
+      let right_t = intersect_aabb(ray.origin, inv_dir, tlas_nodes[right_idx].aabb_min, tlas_nodes[right_idx].aabb_max);
+      if (left_t < right_t) {
+        if (right_t >= 0. && right_t < (*hit).t) { stack[stack_ptr] = right_idx; stack_ptr++; }
+        if (left_t >= 0. && left_t < (*hit).t) { stack[stack_ptr] = left_idx; stack_ptr++; }
+      } else {
+        if (left_t >= 0. && left_t < (*hit).t) { stack[stack_ptr] = left_idx; stack_ptr++; }
+        if (right_t >= 0. && right_t < (*hit).t) { stack[stack_ptr] = right_idx; stack_ptr++; }
+      }
     }
   }
+}
+
+fn trace_scene(ray: Ray) -> SurfaceHit {
+  var hit = SurfaceHit(1e10, -1, vec3f(0.0), vec3f(0.0), vec2f(0.0), vec3f(0.0), vec3f(0.0), 0);
   
   if (HAS_PLANES) {
     for (var i = 0u; i < arrayLength(&planes); i++) {
@@ -620,16 +658,8 @@ fn trace_scene(ray: Ray) -> SurfaceHit {
     }
   }
 
-  if (HAS_FRUSTUMS) {
-    for (var i = 0u; i < arrayLength(&frustums); i++) {
-      trace_frustum(ray, frustums[i], &hit);
-    }
-  }
-
-  if (HAS_TORI) {
-    for (var i = 0u; i < arrayLength(&tori); i++) {
-      trace_torus(ray, tori[i], &hit);
-    }
+  if (HAS_SPHERES || HAS_CUBES || HAS_FRUSTUMS || HAS_TORI) {
+    trace_tlas(ray, &hit);
   }
 
   if (HAS_MESHES) {
