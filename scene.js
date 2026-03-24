@@ -107,8 +107,8 @@ var SceneList = [
       //model.translate(0,1,0);
 
       var matDiamond = new Material(2,[1.0, 1.0, 1.0], 0.0, [0, 0, 0],{ior:2.4});
-      var model = scene.newModel(matDiamond,diamondModel);
-      scene.newModel(matRedGlass,rookModel).translate(-1,0,-1);
+      var model = scene.newModel(matDiamond,diamondModel,false);
+      scene.newModel(matRedGlass,rookModel,false).translate(-1,0,-1);
 
       //var t = scene.newTorus(matRedGlass,0.5);
       //t.translate(0,1,0);
@@ -272,7 +272,15 @@ var SceneList = [
       //scene.background = new HDRTexture([0.04,0.04,0.04,1]);
       scene.background = new HDRTexture('https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/2k/venice_sunset_2k.hdr');
       //scene.background = new HDRTexture('https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/2k/abandoned_greenhouse_2k.hdr');
-      await Promise.resolve(scene.background.loaded);
+
+      var diamondModel = new ModelData('assets/diamond.obj');
+
+      await Promise.all([
+        scene.background.loaded,
+        diamondModel.loaded
+      ]);
+      diamondModel.renormalize(true);
+      diamondModel.generateBVH();
 
       // 1. Setup Materials
       var matGround = new Material(0, [0.1, 0.1, 0.1], 0.1, [0, 0, 0]); // Dark glossy floor
@@ -307,7 +315,7 @@ var SceneList = [
 
       let attempts = 0;
       var rng = mulberry32(42);
-      while (spheres.length < maxSpheres && attempts < 1000) {
+      while (spheres.length < maxSpheres && attempts < 5*maxSpheres) {
         attempts++;
         
         // Random position in a circle (Polar coordinates)
@@ -340,15 +348,19 @@ var SceneList = [
             scene.newSphere(mat, x, y, z, radius);
           } else if (r < 1) {
             scene.newCube(mat, x-radius, y-radius, z-radius, x+radius, y+radius, z+radius);
-          } else if (r < 0.75) {
+          } else if (r < 0.6) {
             scene.newFrustum(mat).orient(x, y-radius, z, radius, x, y+radius, z, radius);
-          } else {
+          } else if (r < 0.8) {
             scene.newTorus(mat,radius*0.75,radius*0.25).translate(x,y-radius*0.5,z);
+          } else {
+            scene.newModel(mat,diamondModel,true).translate(x,y-radius,z).scaleMult(radius,radius,radius);
           }
           // Store metadata for the next collision check
           spheres.push({ x, y, z, radius });
         }
       }
+
+      //scene.newModel(matGround,diamondModel,true);
 
       scene.bounces = 6;
       return scene;
