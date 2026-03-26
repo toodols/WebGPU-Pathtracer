@@ -277,9 +277,10 @@ const fs = `#version 300 es
       outColor = u_color;
     }
   }`;
-const sh = (t, s) => { const x=gl.createShader(t); gl.shaderSource(x, s); gl.compileShader(x); gl.attachShader(prog, x); };
+
+const sh = (t, s) => { const x = gl.createShader(t); gl.shaderSource(x, s); gl.compileShader(x); gl.attachShader(prog, x); };
 sh(gl.VERTEX_SHADER, vs); sh(gl.FRAGMENT_SHADER, fs); gl.linkProgram(prog);
-const locs = { 
+const locs = {
   mvp: gl.getUniformLocation(prog, "u_mvp"), 
   model: gl.getUniformLocation(prog, "u_model"), 
   color: gl.getUniformLocation(prog, "u_color"), 
@@ -865,6 +866,7 @@ function openRenderPopup() {
   if (renderer) renderer.clear();
 
   document.getElementById('render-stats').innerText = 'Status: Ready';
+  document.getElementById('spp').innerText = "0";
 }
 
 var renderer;
