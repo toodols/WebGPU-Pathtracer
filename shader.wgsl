@@ -848,7 +848,7 @@ fn get_surface_context(hit: SurfaceHit, mat: Material, tbn: mat3x3f, uv: vec2f) 
   if (normal_idx >= 0) {
     var n_map = sample_texture(normal_idx, uv).xyz * 2.0 - 1.0;
     n_map.y = -n_map.y; // Standard Y-flip for many normal map formats
-    n_map = normalize(n_map * vec3f(1.0, 1.0, 1.0 / mat.height_params.x));
+    n_map = normalize(n_map * vec3f(mat.height_params.x, mat.height_params.x, 1.0));
     ctx.normal = normalize(tbn * n_map);
   }
 
