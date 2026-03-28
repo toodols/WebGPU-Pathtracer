@@ -313,6 +313,7 @@ const fs = `#version 300 es
   uniform bool u_hasNormal;
   uniform bool u_hasRoughness;
   uniform vec2 u_uvScale; 
+  uniform float u_normalMultiplier;
 
   out vec4 outColor;
 
@@ -351,6 +352,7 @@ const fs = `#version 300 es
 
   vec3 getNormal(vec2 uv) {
     vec3 tangentNormal = texture(u_normalTex, uv).xyz * 2.0 - 1.0;
+    tangentNormal = normalize(tangentNormal * vec3(u_normalMultiplier, u_normalMultiplier, 1.0));
     vec3 q1 = dFdx(v_worldPos);
     vec3 q2 = dFdy(v_worldPos);
     vec2 st1 = dFdx(uv);
@@ -485,7 +487,8 @@ const locs = {
   albedoTex: gl.getUniformLocation(prog, "u_albedoTex"),
   normalTex: gl.getUniformLocation(prog, "u_normalTex"),
   roughnessTex: gl.getUniformLocation(prog, "u_roughnessTex"),
-  uvScale: gl.getUniformLocation(prog, "u_uvScale")
+  uvScale: gl.getUniformLocation(prog, "u_uvScale"),
+  normalMultiplier: gl.getUniformLocation(prog, "u_normalMultiplier")
 };
 
 function setMaterialUniforms(mat) {
@@ -519,6 +522,8 @@ function setMaterialUniforms(mat) {
   gl.uniform1f(locs.roughness, mat.roughness || 0.0);
   gl.uniform1f(locs.ior, mat.ior || 1.45);
   gl.uniform1f(locs.concentration, mat.concentration || 1);
+
+  gl.uniform1f(locs.normalMultiplier, mat.normalMultiplier || 1);
 }
 
 // Modified slightly to return buffers so we can delete them later
@@ -1059,11 +1064,15 @@ const renderInspector = () => {
       at.add(a, 'removeAlbedoTex').name('Remove Texture').onChange(updateMat);
 
       const nt = gui.addFolder('Normal Texture');
+      nt.add(a,'normalMultiplier').name('Multiplier').onChange(updateMat);
       var nslot = createAssetSlot(nt, "Drop Texture Here", Texture, a, 'normalTex').onChange(updateMat);
       a.removeNormalTex = ()=>{ a.normalTex = null; nslot.textContent = "Drop Texture Here"; }
       nt.add(a, 'removeNormalTex').name('Remove Texture').onChange(updateMat);
 
       const ht = gui.addFolder('Height Map');
+      ht.add(a,'heightMultiplier').name('Multiplier');
+      ht.add(a,'heightSamp').name('Samples',1,32,1);
+      ht.add(a,'heightOffset').name('Offset');
       var hslot = createAssetSlot(ht, "Drop Texture Here", Texture, a, 'heightTex');
       a.removeHeightTex = ()=>{ a.heightTex = null; hslot.textContent = "Drop Texture Here"; }
       ht.add(a, 'removeHeightTex').name('Remove Texture');
